@@ -40,7 +40,7 @@ def check_forward(variables, with_cuda, verbose):
     print('Ok')
 
     if with_cuda:
-        cuda_values = cuda.lltm.LLTMFunction.apply(*variables)
+        cuda_values = cuda.batchnorm.LLTMFunction.apply(*variables)
         print('Forward: Baseline (Python) vs. CUDA ... ', end='')
         check_equal(baseline_values, cuda_values, verbose)
         print('Ok')
@@ -63,7 +63,7 @@ def check_backward(variables, with_cuda, verbose):
 
     if with_cuda:
         zero_grad(variables)
-        cuda_values = cuda.lltm.LLTMFunction.apply(*variables)
+        cuda_values = cuda.batchnorm.LLTMFunction.apply(*variables)
         (cuda_values[0] + cuda_values[1]).sum().backward()
         grad_cuda = get_grads(variables)
 
@@ -82,7 +82,7 @@ parser.add_argument('-v', '--verbose', action='store_true')
 options = parser.parse_args()
 
 if options.cuda:
-    import cuda.lltm
+    import cuda.batchnorm
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
