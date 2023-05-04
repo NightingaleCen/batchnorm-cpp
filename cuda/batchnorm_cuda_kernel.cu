@@ -10,7 +10,7 @@
 namespace {
 
   template <typename scalar_t>
-  __global__ void batchnorm2d_cuda_forward_kernel(
+  __global__ void batchnorm2d_cuda_forward_mean_kernel(
     const size_t C, const size_t H, const size_t W, const size_t batch_size,
     const torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> input,
     torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> mu,
@@ -19,8 +19,6 @@ namespace {
     torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> gamma,
     torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> beta,
     torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> output) {
-
-    cooperative_groups::grid_group g = cooperative_groups::this_grid();
 
     const size_t slice_size = batch_size * H * W;
     //batch index
@@ -34,16 +32,59 @@ namespace {
 
     if (r < H && c < W) {
       mu[i] = mu[i] + input[n][i][r][c] / slice_size;
-      //printf("Thread(%d, %d, %d): %d, %d, %d\nBlock(%d, %d, %d): %d, %d, %d\nslice size: %d\nn:%d, i:0, r:%d, c:%d: %f\nmu[0]: %d\n", blockDim.x, blockDim.y, blockDim.z, threadIdx.x, threadIdx.y, threadIdx.z, gridDim.x, gridDim.y, gridDim.z, blockIdx.x, blockIdx.y, blockIdx.z, slice_size, n, r, c, input[n][0][r][c], mu[0]);
-      g.sync(); // synchronize across all the batches
+      printf("%f", mu[0]);
+    }
+  }
+  template <typename scalar_t>
+  __global__ void batchnorm2d_cuda_forward_sigma2_kernel(
+    const size_t C, const size_t H, const size_t W, const size_t batch_size,
+    const torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> input,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> mu,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> sigma2,
+    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> normalized_input,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> gamma,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> beta,
+    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> output) {
 
+    const size_t slice_size = batch_size * H * W;
+    //batch index
+    const int n = blockIdx.z;
+    //column index
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    //row index
+    const int r = blockIdx.y * blockDim.y + threadIdx.y;
+    //channel index
+    const int i = threadIdx.z;
+
+    if (r < H && c < W) {
       sigma2[i] = sigma2[i] + (pow(input[n][i][r][c] - mu[i], 2.0) / slice_size);
+    }
+  }
+  template <typename scalar_t>
+  __global__ void batchnorm2d_cuda_forward_output_kernel(
+    const size_t C, const size_t H, const size_t W, const size_t batch_size,
+    const torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> input,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> mu,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> sigma2,
+    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> normalized_input,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> gamma,
+    torch::PackedTensorAccessor32<scalar_t, 1, torch::RestrictPtrTraits> beta,
+    torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> output) {
 
-      g.sync(); // synchronize across all the batches
+    const size_t slice_size = batch_size * H * W;
+    //batch index
+    const int n = blockIdx.z;
+    //column index
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    //row index
+    const int r = blockIdx.y * blockDim.y + threadIdx.y;
+    //channel index
+    const int i = threadIdx.z;
+
+    if (r < H && c < W) {
       normalized_input[n][i][r][c] = (input[n][i][r][c] - mu[i]) * rsqrt(sigma2[i] + 1e-5);
       output[n][i][r][c] = gamma[i] * normalized_input[n][i][r][c] + beta[i];
     }
-
   }
 
   template <typename scalar_t>
@@ -67,13 +108,13 @@ namespace {
 
     const size_t slice_size = batch_size * H * W;
     //batch index
-    const int n = threadIdx.z;
+    const int n = blockIdx.z;
     //column index
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     //row index
     const int r = blockIdx.y * blockDim.y + threadIdx.y;
     //channel index
-    const int i = blockIdx.z;
+    const int i = threadIdx.z;
     if (r < H && c < W) {
       d_normalized_input[n][i][r][c] = d_output[n][i][r][c] * gamma[i];
       d_gamma[i] = d_gamma[i] + d_output[n][i][r][c] * normalized_input[n][i][r][c];
@@ -91,8 +132,6 @@ namespace {
 
       d_input[n][i][r][c] = d_normalized_input[n][i][r][c] * rsqrt(sigma2[i] + 1e-5) + d_sigma2[i] * (2 / slice_size) * (input[n][i][r][c] - mu[i]) + d_mu[i] * (1 / slice_size);
     }
-
-
   }
 } // namespace
 
@@ -105,15 +144,15 @@ std::vector<torch::Tensor> batchnorm2d_cuda_forward(
   const auto H = input.size(2);
   const auto W = input.size(3);
 
-  const int dim_size = int(floor(sqrt(1024 / batch_size)));
+  const int dim_size = int(floor(sqrt(1024 / C)));
 
   auto mu = torch::zeros_like(gamma);
   auto sigma2 = torch::zeros_like(gamma);
   auto normalized_input = torch::zeros_like(input);
   auto output = torch::zeros_like(input);
 
-  const dim3 threads(dim_size, dim_size, batch_size);
-  const dim3 blocks((H + dim_size - 1) / dim_size, (W + dim_size - 1) / dim_size, C);
+  const dim3 threads(dim_size, dim_size, C);
+  const dim3 blocks((H + dim_size - 1) / dim_size, (W + dim_size - 1) / dim_size, batch_size);
 
   printf("Dim: %d, %d, %d, %d\n", batch_size, C, H, W);
   printf("DimSize: %d\n", dim_size);
@@ -125,17 +164,39 @@ std::vector<torch::Tensor> batchnorm2d_cuda_forward(
   cudaDeviceGetAttribute(&supportsCoopLaunch, cudaDevAttrCooperativeLaunch, dev);
   std::printf("%d", supportsCoopLaunch);*/
 
-  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm2d_forward_cuda", ([&] {
-    auto a_input = input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
-    auto a_mu = mu.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
-    auto a_sigma2 = sigma2.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
-    auto a_normalized_input = normalized_input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
-    auto a_gamma = gamma.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
-    auto a_beta = beta.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
-    auto a_output = output.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
-    void* args[] = { (void*)&C, (void*)&H,(void*)&W, (void*)&batch_size,(void*)&a_input,(void*)&a_mu, (void*)&a_sigma2, (void*)&a_normalized_input, (void*)&a_gamma, (void*)&a_beta, (void*)&a_output };
-    cudaLaunchCooperativeKernel((void*)batchnorm2d_cuda_forward_kernel<scalar_t>, blocks, threads, args);}));
-
+  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm2d_forward_mean_cuda", ([&] {
+    batchnorm2d_cuda_forward_mean_kernel << <blocks, threads >> > (C, H, W, batch_size,
+    input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    mu.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    sigma2.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    normalized_input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    gamma.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    beta.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    output.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>()
+    );}));
+  cudaDeviceSynchronize();
+  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm2d_forward_sigma2_cuda", ([&] {
+    batchnorm2d_cuda_forward_sigma2_kernel << <blocks, threads >> > (C, H, W, batch_size,
+    input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    mu.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    sigma2.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    normalized_input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    gamma.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    beta.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    output.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>()
+    );}));
+  cudaDeviceSynchronize();
+  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm2d_forward_output_cuda", ([&] {
+    batchnorm2d_cuda_forward_output_kernel << <blocks, threads >> > (C, H, W, batch_size,
+    input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    mu.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    sigma2.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    normalized_input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>(),
+    gamma.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    beta.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>(),
+    output.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>()
+    );}));
+  cudaDeviceSynchronize();
   return { input, mu, sigma2, normalized_input, gamma, beta, output };
 }
 
@@ -197,3 +258,4 @@ std::vector<torch::Tensor> batchnorm2d_cuda_backward(
 
   return { d_input, d_gamma, d_beta };
 }
+
