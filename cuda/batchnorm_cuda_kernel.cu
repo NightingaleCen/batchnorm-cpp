@@ -10,6 +10,31 @@
 namespace {
 
   template <typename scalar_t>
+  __device__ void block_reduction_1d(
+    const size_t total_length,
+    scalar_t* input_array,
+    scalar_t* output_array
+  ) {
+    const int thread_num = blockDim.x * blockDim.y * blockDim.z
+      __shared__ scalar_t shared_data[thread_num];
+
+    const int tid = threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.y * blockDim.x;
+    const int i = tid + (blockIdx.x + blockIdx.y * gridDim.x) * thread_num;
+
+    if (i < total_length) {
+      shared_data[tid] = input_array[i];
+    }
+    else {
+      shared_data[tid] = 0;
+    }
+
+    __syncthreads();
+
+
+
+  }
+
+  template <typename scalar_t>
   __global__ void batchnorm2d_cuda_forward_kernel(
     const size_t C, const size_t H, const size_t W, const size_t batch_size,
     const torch::PackedTensorAccessor32<scalar_t, 4, torch::RestrictPtrTraits> input,
@@ -34,7 +59,7 @@ namespace {
 
     if (r < H && c < W) {
       mu[i] = mu[i] + input[n][i][r][c] / slice_size;
-      //printf("Thread(%d, %d, %d): %d, %d, %d\nBlock(%d, %d, %d): %d, %d, %d\nslice size: %d\nn:%d, i:0, r:%d, c:%d: %f\nmu[0]: %d\n", blockDim.x, blockDim.y, blockDim.z, threadIdx.x, threadIdx.y, threadIdx.z, gridDim.x, gridDim.y, gridDim.z, blockIdx.x, blockIdx.y, blockIdx.z, slice_size, n, r, c, input[n][0][r][c], mu[0]);
+
       g.sync(); // synchronize across all the batches
 
       sigma2[i] = sigma2[i] + (pow(input[n][i][r][c] - mu[i], 2.0) / slice_size);
@@ -166,6 +191,11 @@ std::vector<torch::Tensor> batchnorm2d_cuda_backward(
   const dim3 blocks((H + dim_size - 1) / dim_size, (W + dim_size - 1) / dim_size, C);
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm2d_backward_cuda", ([&] {
+    // allocate memory for data sum
+    const size_t total_sum_length = batch_size * H * W;
+    const size_t block_num = blocks.x * blocks.y * blocks.z;
+
+    //define accessors
     auto a_d_input = d_input.packed_accessor32<scalar_t, 4, torch::RestrictPtrTraits>();
     auto a_d_gamma = d_gamma.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
     auto a_d_beta = d_beta.packed_accessor32<scalar_t, 1, torch::RestrictPtrTraits>();
