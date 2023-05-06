@@ -8,7 +8,8 @@ setup(
             "batchnorm_cuda",
             [
                 "batchnorm_cuda.cpp",
-                "batchnorm_cuda_kernel.cu",
+                "batchnorm2d_cuda_kernel.cu",
+                "batchnorm1d_cuda_kernel.cu",
             ],
         ),
     ],
