@@ -79,7 +79,6 @@ namespace {
 
     if (n < batch_size) {
       d_normalized_input[n][i] = d_output[n][i] * gamma[i];
-      //////printf("channel: %d\nd_normalized_input: %f,d_output: %f, gamma: %f\n", i, d_normalized_input[n][i][r][c], d_output[n][i][r][c], gamma[i]);
     }
   }
   template <typename scalar_t>
@@ -97,7 +96,6 @@ namespace {
 
     if (n < batch_size) {
       d_gamma_cache[n][i] = d_output[n][i] * normalized_input[n][i];
-      //////printf("d_gamma_cache: %f\n", d_gamma_cache[n][i][r][c]);
 
     }
   }
@@ -115,7 +113,6 @@ namespace {
 
     if (n < batch_size) {
       d_beta_cache[n][i] = d_output[n][i];
-      //printf("d_beta_cache: %f\n", d_beta_cache[n][i][r][c]);
     }
   }
   template <typename scalar_t>
@@ -135,7 +132,6 @@ namespace {
 
     if (n < batch_size) {
       d_sigma2_cache[n][i] = d_output[n][i] * (input[n][i] - mu[i]) * ((gamma[i] / (-2)) * rsqrt(sigma2[i] + 1e-5) * rsqrt(sigma2[i] + 1e-5) * rsqrt(sigma2[i] + 1e-5));
-      //////printf("d_sigma2_cache: %f,d_output: %f,input: %f,mu: %f,sigma2: %f,gamma: %f\n", d_sigma2_cache[n][i][r][c], d_output[n][i][r][c], input[n][i][r][c], mu[i], sigma2[i], gamma[i]);
     }
   }
 
@@ -157,7 +153,6 @@ namespace {
 
     if (n < batch_size) {
       d_mu_cache[n][i] = (((-2) * d_sigma2[i] * (input[n][i] - mu[i])) / batch_size) + (d_output[n][i] * (-1) * gamma[i] * rsqrt(sigma2[i] + 1e-5));
-      //////printf("d_mu_cache: %f,d_sigma2: %f,d_output: %f,input: %f,mu: %f,sigma2: %f,gamma: %f,slice_size: %u, rsqrt: %f\n", d_mu_cache[n][i][r][c], d_sigma2[i], d_output[n][i][r][c], input[n][i][r][c], mu[i], sigma2[i], gamma[i], slice_size, rsqrt(sigma2[i] + 1e-5));
     }
   }
 
@@ -180,7 +175,6 @@ namespace {
 
     if (n < batch_size) {
       d_input[n][i] = (d_normalized_input[n][i] * rsqrt(sigma2[i] + 1e-5)) + (d_sigma2[i] * ((2 * (input[n][i] - mu[i])) / batch_size) + (d_mu[i] / batch_size));
-      //////printf("d_input: %f,d_mu: %f,d_sigma2: %f,input: %f,d_normalized_input: %f,mu: %f,sigma2: %f,slice_size: %u\n", d_input[n][i][r][c], d_mu[i], d_sigma2[i], input[n][i][r][c], d_normalized_input[n][i][r][c], mu[i], sigma2[i], slice_size);
     }
   }
 } // namespace
@@ -196,7 +190,6 @@ __global__ void reduction_sum1d_kernel(scalar_t* array, scalar_t* sum_output, co
 
   if (i < total_num) {
     shared_data[tid] = array[i];
-    //printf("%f ,", array[i]);
   }
   else {
     shared_data[tid] = 0;
@@ -212,7 +205,6 @@ __global__ void reduction_sum1d_kernel(scalar_t* array, scalar_t* sum_output, co
   }
 
   if (tid == 0) {
-    //printf("\n");
     sum_output[blockIdx.x] = shared_data[0];
   }
 }
@@ -228,8 +220,6 @@ scalar_t reduction_sum(
 
   scalar_t* block_sums; // block_sum[-1] represents the total sum of array
   cudaMalloc((void**)&block_sums, sizeof(scalar_t) * (1 + block_num));
-  //printf("Block num: %d\n", block_num);
-  //printf("Redution total num: %d\n", total_num);
 
   reduction_sum1d_kernel<scalar_t> << < block_num, thread_num, thread_num * sizeof(scalar_t) >> > (array.data_ptr<scalar_t>(), block_sums, total_num);
   cudaDeviceSynchronize();
@@ -241,7 +231,6 @@ scalar_t reduction_sum(
   cudaMemcpy(&total_sum, block_sums + block_num, sizeof(scalar_t), cudaMemcpyDeviceToHost);
   cudaFree(block_sums);
 
-  //printf("Redution total sum: %f\n", total_sum);
 
   return total_sum;
 
@@ -265,11 +254,6 @@ std::vector<torch::Tensor> batchnorm1d_cuda_forward(
   const dim3 threads(thread_batch_num, C, 1);
   const dim3 blocks((batch_size + thread_batch_num - 1) / thread_batch_num, 1, 1);
 
-  //printf("Forward:\n");
-  //printf("Dim: %d, %d, %d, %d\n", batch_size, C, H, W);
-  //printf("DimSize: %d\n", dim_size);
-  //printf("blockDim: %d, %d, %d\n", threads.x, threads.y, threads.z);
-  //printf("gridDim: %d, %d, %d\n", blocks.x, blocks.y, blocks.z);
 
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm1d_forward_cuda", ([&] {
@@ -333,11 +317,6 @@ std::vector<torch::Tensor> batchnorm1d_cuda_backward(
   const dim3 threads(thread_batch_num, C, 1);
   const dim3 blocks((batch_size + thread_batch_num - 1) / thread_batch_num, 1, 1);
 
-  //printf("Backward:\n");
-  //printf("Dim: %d, %d, %d, %d\n", batch_size, C, H, W);
-  //printf("DimSize: %d\n", dim_size);
-  //printf("blockDim: %d, %d, %d\n", threads.x, threads.y, threads.z);
-  //printf("gridDim: %d, %d, %d\n", blocks.x, blocks.y, blocks.z);
 
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "batchnorm1d_backward_cuda", ([&] {
