@@ -53,8 +53,8 @@ std::vector<torch::Tensor> batchnorm2d_backward(
   CHECK_INPUT(beta);
 
   return batchnorm2d_cuda_backward(
-    input,
     d_output,
+    input,
     mu,
     sigma2,
     normalized_input,

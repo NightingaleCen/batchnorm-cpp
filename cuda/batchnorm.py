@@ -12,9 +12,6 @@ class BatchNorm2dFunction(Function):
     def forward(ctx, input, gamma, beta):
         outputs = batchnorm_cuda.batchnorm2d_forward(input, gamma, beta)
         variables = outputs[:-1]
-        # print(outputs[0])
-        # print(outputs[3])
-        # print(outputs[-1])
         ctx.save_for_backward(*variables)
 
         return outputs[-1]
@@ -25,7 +22,6 @@ class BatchNorm2dFunction(Function):
             d_output.contiguous(), *ctx.saved_variables
         )
         d_input, d_gamma, d_beta = outputs
-        # sd_input, d_gamma, d_beta = 0, 0, 0
         return d_input, d_gamma, d_beta
 
 
@@ -35,5 +31,5 @@ class BatchNorm2d(nn.Module):
         self.gamma = nn.Parameter(torch.ones(num_features))
         self.bata = nn.Parameter(torch.zeros(num_features))
 
-    def forward(self, input, state):
-        return BatchNorm2dFunction.apply(input, self.gamma, self.beta, *state)
+    def forward(self, input):
+        return BatchNorm2dFunction.apply(input, self.gamma, self.beta)
